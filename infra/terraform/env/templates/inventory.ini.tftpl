@@ -1,0 +1,15 @@
+[app]
+${app_name}
+
+[db]
+${db_name}
+
+[all:vars]
+ansible_user=${ssh_user}
+gcp_project=${project_id}
+gcp_zone=${zone}
+kubeshop_environment=${environment}
+db_private_ip=${db_private_ip}
+app_public_ip=${app_public_ip}
+backup_bucket=${backup_bucket}
+registry_url=${registry_url}

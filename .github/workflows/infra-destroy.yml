@@ -1,0 +1,146 @@
+name: Infra - Desativar ambiente
+run-name: "Desativar ${{ inputs.environment }}/${{ inputs.instance_name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente a desativar
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      instance_name:
+        description: Prefixo das VMs e recursos
+        type: string
+        default: kubeshop
+      confirm:
+        description: "Digite DESTRUIR-<ambiente> (ex.: DESTRUIR-dev). Apaga VMs, rede e o disco de dados do MongoDB"
+        type: string
+      backup_before_destroy:
+        description: Executar backup para o bucket antes de destruir
+        type: boolean
+        default: true
+      destroy_shared:
+        description: Remover tambem registry de imagens e bucket de backups (irreversivel)
+        type: boolean
+        default: false
+      confirm_shared:
+        description: "Somente com destroy_shared: digite APAGAR-BACKUPS-E-IMAGENS"
+        type: string
+        default: ""
+
+concurrency:
+  group: infra-${{ inputs.environment }}-${{ inputs.instance_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  destroy:
+    name: Desativar
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    env:
+      TF_IN_AUTOMATION: "true"
+      ANSIBLE_FORCE_COLOR: "false"
+      ANSIBLE_LOG_PATH: ${{ github.workspace }}/ansible-run.log
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      INSTANCE_NAME: ${{ inputs.instance_name }}
+      CONFIRM: ${{ inputs.confirm }}
+      CONFIRM_SHARED: ${{ inputs.confirm_shared }}
+      DESTROY_SHARED: ${{ inputs.destroy_shared }}
+      MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION || 'southamerica-east1' }}
+      TF_VAR_zone: ${{ vars.GCP_ZONE || 'southamerica-east1-a' }}
+      TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_instance_name: ${{ inputs.instance_name }}
+      TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+      TF_VAR_backup_bucket: ${{ vars.GCP_PROJECT_ID }}-kubeshop-backups
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar confirmacao
+        run: |
+          bash infra/scripts/validate-inputs.sh
+          if [[ "$CONFIRM" != "DESTRUIR-${ENVIRONMENT}" ]]; then
+            echo "::error::Confirmacao invalida. Digite exatamente DESTRUIR-${ENVIRONMENT}."
+            exit 1
+          fi
+          if [[ "$DESTROY_SHARED" == "true" && "$CONFIRM_SHARED" != "APAGAR-BACKUPS-E-IMAGENS" ]]; then
+            echo "::error::Para remover registry e backups digite APAGAR-BACKUPS-E-IMAGENS."
+            exit 1
+          fi
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          ansible: ${{ inputs.backup_before_destroy && 'true' || 'false' }}
+
+      - name: Backup final antes de desativar
+        if: inputs.backup_before_destroy
+        run: |
+          bash infra/scripts/tf-init.sh env
+          bash infra/scripts/prepare-ansible.sh
+          cd infra/ansible
+          ansible-playbook playbooks/backup.yml
+
+      - name: Plano de destruicao do ambiente
+        run: |
+          bash infra/scripts/tf-init.sh env
+          bash infra/scripts/tf-plan.sh env -destroy
+
+      - name: Destruir ambiente
+        run: terraform -chdir=infra/terraform/env apply -input=false -no-color -lock-timeout=5m tfplan
+
+      - name: Destruir recursos compartilhados
+        if: inputs.destroy_shared
+        run: |
+          bash infra/scripts/tf-init.sh shared
+          cd infra/terraform/shared
+          # force_destroy precisa estar gravado no state antes de apagar um bucket com objetos.
+          terraform apply -input=false -no-color -auto-approve -var allow_destroy_data=true -target=google_storage_bucket.backups
+          terraform destroy -input=false -no-color -auto-approve -var allow_destroy_data=true
+
+      - name: Destino dos dados e custos remanescentes
+        if: always()
+        run: |
+          {
+            echo "### Estado apos a desativacao de \`${ENVIRONMENT}/${INSTANCE_NAME}\`"
+            echo "- VMs, discos de boot e disco de dados do MongoDB: removidos."
+            echo "- IPs, VPC, NAT e firewall: removidos."
+            echo "- Snapshots diarios ja criados permanecem ate o fim da retencao e continuam gerando custo:"
+            echo '```'
+            gcloud compute snapshots list --project "$GCP_PROJECT_ID" --filter="labels.environment=${ENVIRONMENT}" \
+              --format="table(name,diskSizeGb,creationTimestamp)" || true
+            echo '```'
+            echo "- Backups no bucket \`${GCP_PROJECT_ID}-kubeshop-backups\` (sem custo de VM, cobrado por GB):"
+            echo '```'
+            gcloud storage ls "gs://${GCP_PROJECT_ID}-kubeshop-backups/${ENVIRONMENT}/" 2>&1 || echo "(bucket ou prefixo inexistente)"
+            echo '```'
+            echo "- Artifact Registry e bucket do state do Terraform nao sao removidos por este fluxo."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Registro da execucao
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desativacao-${{ github.run_id }}
+          path: ansible-run.log
+          if-no-files-found: ignore
+          retention-days: 30

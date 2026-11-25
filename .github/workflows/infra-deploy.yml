@@ -1,0 +1,317 @@
+name: Infra - Provisionar e configurar
+run-name: "Infra ${{ inputs.action }} - ${{ inputs.environment }}/${{ inputs.instance_name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan = apenas mostra as alteracoes; apply = aplica Terraform e configura com Ansible"
+        type: choice
+        options: [plan, apply]
+        default: plan
+      environment:
+        description: Ambiente de destino
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      instance_name:
+        description: Prefixo das VMs e recursos (3-15 caracteres)
+        type: string
+        default: kubeshop
+      app_machine_type:
+        description: Tipo da VM de aplicacao (instance_type)
+        type: choice
+        options: [e2-micro, e2-small, e2-medium]
+        default: e2-small
+      db_machine_type:
+        description: Tipo da VM do MongoDB
+        type: choice
+        options: [e2-micro, e2-small, e2-medium]
+        default: e2-small
+      db_disk_size_gb:
+        description: Disco de dados do MongoDB em GB (10-200; so pode aumentar)
+        type: string
+        default: "10"
+      app_version:
+        description: Tag das imagens da aplicacao (docker_tag), ex. 1.0.0
+        type: string
+        default: "1.0.0"
+      build_images:
+        description: Construir e publicar as imagens desta versao antes de implantar (primeira implantacao)
+        type: boolean
+        default: false
+      mongo_image_tag:
+        description: Tag da imagem mongo
+        type: string
+        default: "8.0.17"
+      update_os:
+        description: Aplicar atualizacoes do sistema operacional (update_os)
+        type: boolean
+        default: false
+      allow_reboot:
+        description: Permitir reinicio quando a atualizacao do SO exigir
+        type: boolean
+        default: true
+      extra_packages:
+        description: Pacotes adicionais separados por virgula (extra_packages), ex. curl,git,unzip
+        type: string
+        default: ""
+      force_pull_images:
+        description: Forcar download das imagens mesmo com a mesma tag
+        type: boolean
+        default: false
+      check_idempotence:
+        description: Reexecutar o playbook e falhar se houver alteracoes (cenario 3)
+        type: boolean
+        default: false
+      run_smoke:
+        description: Validar loja, pedido e isolamento do banco ao final
+        type: boolean
+        default: true
+
+concurrency:
+  group: infra-${{ inputs.environment }}-${{ inputs.instance_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  ANSIBLE_FORCE_COLOR: "false"
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
+  ENVIRONMENT: ${{ inputs.environment }}
+  INSTANCE_NAME: ${{ inputs.instance_name }}
+  APP_MACHINE_TYPE: ${{ inputs.app_machine_type }}
+  DB_MACHINE_TYPE: ${{ inputs.db_machine_type }}
+  DB_DISK_SIZE_GB: ${{ inputs.db_disk_size_gb }}
+  APP_VERSION: ${{ inputs.app_version }}
+  MONGO_IMAGE_TAG: ${{ inputs.mongo_image_tag }}
+  EXTRA_PACKAGES: ${{ inputs.extra_packages }}
+  TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+  TF_VAR_region: ${{ vars.GCP_REGION || 'southamerica-east1' }}
+  TF_VAR_zone: ${{ vars.GCP_ZONE || 'southamerica-east1-a' }}
+  TF_VAR_environment: ${{ inputs.environment }}
+  TF_VAR_instance_name: ${{ inputs.instance_name }}
+  TF_VAR_app_machine_type: ${{ inputs.app_machine_type }}
+  TF_VAR_db_machine_type: ${{ inputs.db_machine_type }}
+  TF_VAR_db_disk_size_gb: ${{ inputs.db_disk_size_gb }}
+  TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+  TF_VAR_backup_bucket: ${{ vars.GCP_PROJECT_ID }}-kubeshop-backups
+
+jobs:
+  validate:
+    name: Validar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar parametros
+        run: bash infra/scripts/validate-inputs.sh
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          ansible: "true"
+
+      - name: Terraform fmt e validate
+        run: |
+          terraform fmt -check -recursive -diff infra/terraform
+          for stack in shared env; do
+            terraform -chdir=infra/terraform/$stack init -backend=false -input=false -no-color >/dev/null
+            terraform -chdir=infra/terraform/$stack validate -no-color
+          done
+
+      - name: Ansible syntax-check
+        working-directory: infra/ansible
+        run: ansible-playbook -i inventory/hosts.example.ini playbooks/site.yml --syntax-check
+
+      - name: Ansible lint (informativo)
+        working-directory: infra/ansible
+        continue-on-error: true
+        run: ansible-lint playbooks roles
+
+  plan:
+    name: Planejar
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      shared_changes: ${{ steps.shared.outputs.shared_changes }}
+      env_changes: ${{ steps.env.outputs.env_changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Plan - recursos compartilhados (registry e backups)
+        id: shared
+        run: |
+          bash infra/scripts/tf-init.sh shared
+          bash infra/scripts/tf-plan.sh shared
+
+      - name: Plan - ambiente (rede, VMs, discos)
+        id: env
+        run: |
+          bash infra/scripts/tf-init.sh env
+          bash infra/scripts/tf-plan.sh env
+
+      - name: Guardar planos
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: |
+            infra/terraform/shared/tfplan
+            infra/terraform/env/tfplan
+          retention-days: 7
+
+  apply:
+    name: Provisionar (Terraform)
+    needs: plan
+    if: inputs.action == 'apply'
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: infra/terraform
+
+      - name: Apply - recursos compartilhados
+        run: |
+          bash infra/scripts/tf-init.sh shared
+          terraform -chdir=infra/terraform/shared apply -input=false -no-color -lock-timeout=5m tfplan
+
+      - name: Apply - ambiente
+        run: |
+          bash infra/scripts/tf-init.sh env
+          terraform -chdir=infra/terraform/env apply -input=false -no-color -lock-timeout=5m tfplan
+          {
+            echo "### Recursos do ambiente"
+            echo '```'
+            terraform -chdir=infra/terraform/env output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    name: Publicar imagens
+    needs: apply
+    if: inputs.build_images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REGISTRY_URL: ${{ vars.GCP_REGION || 'southamerica-east1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/kubeshop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          terraform: "false"
+
+      - name: Autenticar o Docker no Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION || 'southamerica-east1' }}-docker.pkg.dev" --quiet
+
+      - name: Construir e publicar
+        run: bash infra/scripts/build-push-images.sh "$APP_VERSION"
+
+  configure:
+    name: Configurar (Ansible)
+    needs: [apply, images]
+    if: ${{ !cancelled() && needs.apply.result == 'success' && (needs.images.result == 'success' || needs.images.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    env:
+      ANSIBLE_LOG_PATH: ${{ github.workspace }}/ansible-run.log
+      MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          ansible: "true"
+
+      - name: Inventario e conectividade
+        run: |
+          bash infra/scripts/tf-init.sh env
+          bash infra/scripts/prepare-ansible.sh
+
+      - name: Variaveis do playbook
+        env:
+          UPDATE_OS: ${{ inputs.update_os }}
+          ALLOW_REBOOT: ${{ inputs.allow_reboot }}
+          FORCE_PULL: ${{ inputs.force_pull_images }}
+        run: |
+          jq -n \
+            --arg app_version "$APP_VERSION" \
+            --arg mongo_image_tag "$MONGO_IMAGE_TAG" \
+            --arg extra_packages "$EXTRA_PACKAGES" \
+            --argjson update_os "$UPDATE_OS" \
+            --argjson allow_reboot "$ALLOW_REBOOT" \
+            --argjson force_pull_images "$FORCE_PULL" \
+            '$ARGS.named' > "$RUNNER_TEMP/extra-vars.json"
+          echo "Parametros enviados ao Ansible (sem segredos):"
+          cat "$RUNNER_TEMP/extra-vars.json"
+
+      - name: Ansible - site.yml
+        working-directory: infra/ansible
+        run: ansible-playbook playbooks/site.yml -e "@$RUNNER_TEMP/extra-vars.json" 2>&1 | tee "$RUNNER_TEMP/run1.txt"
+
+      - name: Ansible - segunda execucao (idempotencia)
+        if: inputs.check_idempotence
+        working-directory: infra/ansible
+        run: |
+          ansible-playbook playbooks/site.yml -e "@$RUNNER_TEMP/extra-vars.json" 2>&1 | tee "$RUNNER_TEMP/run2.txt"
+          recap="$(sed -n '/PLAY RECAP/,$p' "$RUNNER_TEMP/run2.txt")"
+          { echo "### Ansible - segunda execucao"; echo '```'; echo "$recap"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -Eq 'changed=[1-9]' <<<"$recap"; then
+            echo "::error::O playbook nao e idempotente: a segunda execucao alterou o ambiente."
+            exit 1
+          fi
+
+      - name: Validar loja e isolamento
+        if: inputs.run_smoke
+        run: |
+          out="infra/terraform/env"
+          STORE_URL="$(terraform -chdir=$out output -raw store_url)" \
+          APP_PUBLIC_IP="$(terraform -chdir=$out output -raw app_public_ip)" \
+          DB_PUBLIC_IP="$(terraform -chdir=$out output -raw db_public_ip)" \
+          bash infra/scripts/verify.sh
+
+      - name: Registro da execucao
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ansible-log-${{ github.run_id }}
+          path: ansible-run.log
+          if-no-files-found: ignore
+          retention-days: 30

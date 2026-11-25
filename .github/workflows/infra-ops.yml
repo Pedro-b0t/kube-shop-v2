@@ -1,0 +1,131 @@
+name: Infra - Operacao (saude, logs, reinicio, backup, restauracao)
+run-name: "Operacao ${{ inputs.operation }} - ${{ inputs.environment }}/${{ inputs.instance_name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Rotina a executar
+        type: choice
+        options: [health, verify, logs, restart, backup, restore]
+        default: health
+      environment:
+        description: Ambiente de destino
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      instance_name:
+        description: Prefixo das VMs e recursos
+        type: string
+        default: kubeshop
+      scope:
+        description: "restart/logs: all, app ou db"
+        type: choice
+        options: [all, app, db]
+        default: all
+      log_lines:
+        description: "logs: quantidade de linhas por servico"
+        type: string
+        default: "200"
+      backup_file:
+        description: "restore: objeto do bucket (ex.: dev/kubeshop-20261126T030000Z.archive.gz) ou latest"
+        type: string
+        default: latest
+      order_id:
+        description: "verify: id de um pedido que deve existir (prova de persistencia); vazio cria um novo"
+        type: string
+        default: ""
+      confirm:
+        description: "restore: digite RESTORE (a restauracao SOBRESCREVE os dados atuais)"
+        type: string
+        default: ""
+
+concurrency:
+  group: infra-${{ inputs.environment }}-${{ inputs.instance_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  operate:
+    name: ${{ inputs.operation }}
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 45
+    env:
+      TF_IN_AUTOMATION: "true"
+      ANSIBLE_FORCE_COLOR: "false"
+      ANSIBLE_LOG_PATH: ${{ github.workspace }}/ansible-run.log
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      INSTANCE_NAME: ${{ inputs.instance_name }}
+      MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      OPERATION: ${{ inputs.operation }}
+      SCOPE: ${{ inputs.scope }}
+      LOG_LINES: ${{ inputs.log_lines }}
+      BACKUP_FILE: ${{ inputs.backup_file }}
+      ORDER_ID: ${{ inputs.order_id }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar parametros
+        run: |
+          bash infra/scripts/validate-inputs.sh
+          [[ "$LOG_LINES" =~ ^[0-9]{1,4}$ ]] || { echo "::error::log_lines invalido"; exit 1; }
+          [[ "$BACKUP_FILE" =~ ^(latest|[A-Za-z0-9._/-]{1,200})$ ]] || { echo "::error::backup_file invalido"; exit 1; }
+          [[ -z "$ORDER_ID" || "$ORDER_ID" =~ ^[A-Za-z0-9]{8,64}$ ]] || { echo "::error::order_id invalido"; exit 1; }
+          if [[ "$OPERATION" == "restore" && "$CONFIRM" != "RESTORE" ]]; then
+            echo "::error::Restauracao sobrescreve os dados atuais. Informe confirm=RESTORE."
+            exit 1
+          fi
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          ansible: "true"
+
+      - name: Inventario e conectividade
+        run: |
+          bash infra/scripts/tf-init.sh env
+          bash infra/scripts/prepare-ansible.sh
+
+      - name: Executar rotina
+        working-directory: infra/ansible
+        run: |
+          case "$OPERATION" in
+            health)  ansible-playbook playbooks/health.yml ;;
+            logs)    ansible-playbook playbooks/logs.yml -e "service_scope=$SCOPE" -e "log_lines=$LOG_LINES" ;;
+            restart) ansible-playbook playbooks/restart.yml -e "service_scope=$SCOPE" ;;
+            backup)  ansible-playbook playbooks/backup.yml ;;
+            restore) ansible-playbook playbooks/restore.yml -e "backup_file=$BACKUP_FILE" ;;
+            verify)
+              out="../terraform/env"
+              STORE_URL="$(terraform -chdir=$out output -raw store_url)" \
+              APP_PUBLIC_IP="$(terraform -chdir=$out output -raw app_public_ip)" \
+              DB_PUBLIC_IP="$(terraform -chdir=$out output -raw db_public_ip)" \
+              bash ../scripts/verify.sh ;;
+            *) echo "::error::rotina desconhecida: $OPERATION"; exit 1 ;;
+          esac
+
+      - name: Registro da execucao
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operacao-${{ inputs.operation }}-${{ github.run_id }}
+          path: ansible-run.log
+          if-no-files-found: ignore
+          retention-days: 30

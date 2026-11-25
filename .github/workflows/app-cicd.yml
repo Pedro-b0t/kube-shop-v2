@@ -1,0 +1,77 @@
+name: Aplicacao - CI/CD (referencia)
+run-name: "CI/CD da aplicacao - ${{ github.sha }}"
+
+# Pipeline de REFERENCIA que representa o CI/CD ja existente da Zibiska Korp.
+# Mostra os pontos de integracao com o ambiente provisionado:
+#   1) testes e build;  2) publicacao das imagens no Artifact Registry;  3) chamada do deploy.
+# Se o pipeline real for outro, replique os passos 2 e 3 (veja infra/README.md, "Integracao com o CI/CD").
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/**", "package.json", "package-lock.json", "scripts/smoke.mjs"]
+  workflow_dispatch:
+    inputs:
+      deploy_environment:
+        description: Ambiente de destino do deploy
+        type: choice
+        options: [dev, homolog]
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Testes e build
+    # Em push, so executa quando o ambiente ja foi provisionado (variavel CI_DEPLOY_ENABLED=true).
+    if: github.event_name != 'push' || vars.CI_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  publish:
+    name: Publicar imagens
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    env:
+      REGISTRY_URL: ${{ vars.GCP_REGION || 'southamerica-east1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/kubeshop
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Service Account propria do CI, so com permissao de gravar imagens.
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+          terraform: "false"
+
+      - run: gcloud auth configure-docker "${{ vars.GCP_REGION || 'southamerica-east1' }}-docker.pkg.dev" --quiet
+
+      - run: bash infra/scripts/build-push-images.sh "${{ steps.tag.outputs.tag }}"
+
+  deploy:
+    name: Implantar
+    needs: publish
+    uses: ./.github/workflows/infra-app-deploy.yml
+    with:
+      environment: ${{ inputs.deploy_environment || 'dev' }}
+      app_version: ${{ needs.publish.outputs.tag }}
+    secrets: inherit

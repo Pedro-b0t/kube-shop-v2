@@ -1,0 +1,29 @@
+---
+# Acesso SSH somente pelo tunel do Identity-Aware Proxy (porta 22 fechada para a internet).
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+  -o ProxyCommand="gcloud compute start-iap-tunnel %h 22 --listen-on-stdin
+  --project={{ gcp_project }} --zone={{ gcp_zone }} --verbosity=warning"
+
+repo_root: "{{ playbook_dir }}/../../.."
+kubeshop_etc: /etc/kubeshop
+
+# ----- Parametros do pipeline (podem ser sobrescritos com -e) -----
+# "current" mantem a versao ja implantada (ou a padrao, na primeira execucao).
+app_version: current
+kubeshop_app_version_default: "1.0.0"
+mongo_image_tag: "8.0.17"
+update_os: false
+allow_reboot: true
+extra_packages: ""
+force_pull_images: false
+
+# ----- MongoDB -----
+mongo_port: 27017
+mongo_database: kubeshop
+mongo_root_username: admin
+mongo_app_username: kubeshop
+mongo_container_name: kubeshop-mongodb
+# Credenciais lidas de variaveis de ambiente (GitHub Secrets); nunca versionadas.
+mongo_root_password: "{{ lookup('ansible.builtin.env', 'MONGO_ROOT_PASSWORD') }}"
+mongo_app_password: "{{ lookup('ansible.builtin.env', 'MONGO_APP_PASSWORD') }}"

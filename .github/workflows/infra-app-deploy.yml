@@ -1,0 +1,123 @@
+name: Infra - Implantar versao da aplicacao
+run-name: "Implantar ${{ inputs.app_version }} em ${{ inputs.environment }}/${{ inputs.instance_name }}"
+
+# Ponto de integracao com o CI/CD existente: o pipeline da aplicacao publica as imagens
+# e chama este workflow (workflow_call). Tambem serve para rollback manual informando uma tag anterior.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente de destino
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      instance_name:
+        description: Prefixo das VMs e recursos
+        type: string
+        default: kubeshop
+      app_version:
+        description: Tag das imagens ja publicadas no Artifact Registry (use uma tag anterior para rollback)
+        type: string
+      force_pull_images:
+        description: Forcar download das imagens mesmo com a mesma tag
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      instance_name:
+        type: string
+        default: kubeshop
+      app_version:
+        type: string
+        required: true
+      force_pull_images:
+        type: boolean
+        default: false
+
+concurrency:
+  group: infra-${{ inputs.environment }}-${{ inputs.instance_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    name: Implantar aplicacao
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+    env:
+      TF_IN_AUTOMATION: "true"
+      ANSIBLE_FORCE_COLOR: "false"
+      ANSIBLE_LOG_PATH: ${{ github.workspace }}/ansible-run.log
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      INSTANCE_NAME: ${{ inputs.instance_name }}
+      APP_VERSION: ${{ inputs.app_version }}
+      FORCE_PULL: ${{ inputs.force_pull_images }}
+      MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+      MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar parametros
+        run: |
+          bash infra/scripts/validate-inputs.sh
+          [[ -n "$APP_VERSION" ]] || { echo "::error::app_version e obrigatorio"; exit 1; }
+
+      - uses: ./.github/actions/setup-infra
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          ansible: "true"
+
+      - name: Conferir que as imagens existem
+        env:
+          REGISTRY_URL: ${{ vars.GCP_REGION || 'southamerica-east1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/kubeshop
+        run: |
+          for image in api frontend; do
+            gcloud artifacts docker images describe "${REGISTRY_URL}/${image}:${APP_VERSION}" >/dev/null \
+              || { echo "::error::Imagem ${image}:${APP_VERSION} nao encontrada no Artifact Registry"; exit 1; }
+          done
+
+      - name: Inventario e conectividade
+        run: |
+          bash infra/scripts/tf-init.sh env
+          bash infra/scripts/prepare-ansible.sh
+
+      - name: Implantar nas VMs de aplicacao
+        working-directory: infra/ansible
+        run: |
+          ansible-playbook playbooks/site.yml --limit app \
+            -e "app_version=$APP_VERSION" -e "force_pull_images=$FORCE_PULL"
+
+      - name: Validar loja
+        run: |
+          out="infra/terraform/env"
+          STORE_URL="$(terraform -chdir=$out output -raw store_url)" \
+          APP_PUBLIC_IP="$(terraform -chdir=$out output -raw app_public_ip)" \
+          DB_PUBLIC_IP="$(terraform -chdir=$out output -raw db_public_ip)" \
+          bash infra/scripts/verify.sh
+
+      - name: Registro da execucao
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-app-${{ github.run_id }}
+          path: ansible-run.log
+          if-no-files-found: ignore
+          retention-days: 30

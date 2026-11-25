@@ -9,3 +9,13 @@ coverage/
 test-results/
 playwright-report/
 *.log
+
+# Terraform / Ansible
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+infra/ansible/inventory/hosts.ini
+*.pem
+id_ed25519*
