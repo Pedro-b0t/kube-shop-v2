@@ -1,16 +1,50 @@
 ---
-- name: Verificação de saúde
-  hosts: all
+- name: Saúde da VM de aplicação
+  hosts: app
+  become: true
   gather_facts: false
-
   tasks:
-
-    - name: Verificar containers
-      ansible.builtin.command:
-        cmd: docker ps
-      register: docker_status
+    - name: Containers em execução
+      ansible.builtin.command: docker ps --format "table {% raw %}{{.Names}}\t{{.Image}}\t{{.Status}}{% endraw %}"
+      register: health_app_ps
       changed_when: false
 
-    - name: Exibir status
+    - name: Exibir containers
       ansible.builtin.debug:
-        var: docker_status.stdout_lines
+        var: health_app_ps.stdout_lines
+
+    - name: Consultar /api/health/ready pelo Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/health/ready
+        return_content: true
+      register: health_ready
+      retries: 6
+      delay: 10
+      until: health_ready.status == 200
+
+    - name: Exibir prontidão da API (inclui acesso ao banco)
+      ansible.builtin.debug:
+        msg: "readiness HTTP {{ health_ready.status }}: {{ health_ready.content }}"
+
+- name: Saúde da VM do banco
+  hosts: db
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Estado do healthcheck do MongoDB
+      ansible.builtin.command: docker inspect --format "{% raw %}{{.State.Status}} {{.State.Health.Status}}{% endraw %}" {{ mongo_container_name }}
+      register: health_mongo
+      changed_when: false
+      failed_when: health_mongo.stdout != 'running healthy'
+
+    - name: Porta 27017 escutando apenas no IP privado
+      ansible.builtin.command: ss -ltnH "sport = :{{ mongo_port }}"
+      register: health_mongo_port
+      changed_when: false
+
+    - name: Exibir estado do banco
+      ansible.builtin.debug:
+        msg:
+          - "MongoDB: {{ health_mongo.stdout }}"
+          - "Sockets na porta {{ mongo_port }}: {{ health_mongo_port.stdout_lines }}"
+          - "IP privado esperado: {{ db_private_ip }}"

@@ -2,21 +2,19 @@
 - name: Configuração base de todos os hosts
   hosts: all
   become: true
-
   roles:
     - common
     - docker
 
-- name: Configuração do banco MongoDB
+- name: Configuração do banco MongoDB e backups automatizados
   hosts: db
   become: true
-
   roles:
     - mongodb
+    - backup
 
 - name: Configuração da aplicação
   hosts: app
   become: true
-
   roles:
     - app

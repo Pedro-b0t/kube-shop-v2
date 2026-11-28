@@ -3,51 +3,87 @@
   hosts: db
   become: true
   gather_facts: false
-
+  vars:
+    restore_dir: /tmp/mongo-restore
+    restore_request: "{{ backup_name | default(backup_file | default('latest')) }}"
   tasks:
     - name: Validar confirmação e nome do backup
       ansible.builtin.assert:
         that:
           - confirm_restore | default(false) | bool
-          - backup_name is defined
-          - backup_name is match('^mongodb-[0-9]+[.]archive[.]gz$')
+          - restore_request is match('^(latest|mongodb-[0-9]+[.]archive[.]gz)$')
         fail_msg: >-
-          Informe confirm_restore=true e backup_name com o nome
-          completo de um backup válido.
+          Informe confirm_restore=true e backup_file (ou backup_name)=latest ou o nome completo
+          de um backup (mongodb-<epoch>.archive.gz).
 
-    - name: Criar diretório temporário de restauração
-      ansible.builtin.file:
-        path: /tmp/mongo-restore
-        state: directory
-        mode: "0700"
+    - name: Listar backups do ambiente
+      ansible.builtin.command: "gcloud storage ls gs://{{ backup_bucket }}/{{ kubeshop_environment }}/"
+      register: restore_listing
+      changed_when: false
 
-    - name: Baixar backup do Google Cloud Storage
-      ansible.builtin.command:
-        argv:
-          - gsutil
-          - cp
-          - "gs://{{ backup_bucket }}/{{ kubeshop_environment }}/{{ backup_name }}"
-          - "/tmp/mongo-restore/{{ backup_name }}"
+    - name: Definir o backup a restaurar
+      ansible.builtin.set_fact:
+        restore_name: >-
+          {{ (restore_listing.stdout_lines | map('basename') | select('match', '^mongodb-[0-9]+[.]archive[.]gz$') | sort | last | default(''))
+             if restore_request == 'latest' else restore_request }}
 
-    - name: Copiar backup para o container MongoDB
-      ansible.builtin.command:
-        argv:
-          - docker
-          - cp
-          - "/tmp/mongo-restore/{{ backup_name }}"
-          - "{{ mongo_container_name }}:/tmp/restore.archive.gz"
+    - name: Exigir que o backup exista
+      ansible.builtin.assert:
+        that:
+          - restore_name | length > 0
+          - restore_name in (restore_listing.stdout_lines | map('basename') | list)
+        fail_msg: "Backup não encontrado em gs://{{ backup_bucket }}/{{ kubeshop_environment }}/"
 
-    - name: Restaurar banco de dados
-      ansible.builtin.command:
-        argv:
-          - docker
-          - exec
-          - "{{ mongo_container_name }}"
-          - mongorestore
-          - "--username={{ mongo_root_username }}"
-          - "--password={{ mongo_root_password }}"
-          - "--authenticationDatabase=admin"
-          - --gzip
-          - --archive=/tmp/restore.archive.gz
-          - --drop
-      no_log: true
+    - name: Contar pedidos antes da restauração
+      ansible.builtin.shell: >-
+        docker exec {{ mongo_container_name }} sh -c 'mongosh --quiet --username="{{ mongo_root_username }}"
+        --password="$(cat /run/secrets/mongo_root_password)" --authenticationDatabase=admin
+        {{ mongo_database }} --eval "db.orders.countDocuments({})"'
+      register: restore_before
+      changed_when: false
+
+    - name: Restaurar
+      block:
+        - name: Criar diretório temporário
+          ansible.builtin.file:
+            path: "{{ restore_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Baixar backup do Cloud Storage
+          ansible.builtin.command: "gcloud storage cp gs://{{ backup_bucket }}/{{ kubeshop_environment }}/{{ restore_name }} {{ restore_dir }}/{{ restore_name }} --quiet"
+          changed_when: true
+
+        - name: Copiar backup para o container
+          ansible.builtin.command: "docker cp {{ restore_dir }}/{{ restore_name }} {{ mongo_container_name }}:/tmp/restore.archive.gz"
+          changed_when: true
+
+        - name: Restaurar o banco (substitui os dados atuais)
+          ansible.builtin.shell: >-
+            docker exec {{ mongo_container_name }} sh -c 'mongorestore --quiet --username="{{ mongo_root_username }}"
+            --password="$(cat /run/secrets/mongo_root_password)" --authenticationDatabase=admin
+            --gzip --archive=/tmp/restore.archive.gz --nsInclude="{{ mongo_database }}.*" --drop'
+          changed_when: true
+          no_log: true
+
+        - name: Contar pedidos depois da restauração
+          ansible.builtin.shell: >-
+            docker exec {{ mongo_container_name }} sh -c 'mongosh --quiet --username="{{ mongo_root_username }}"
+            --password="$(cat /run/secrets/mongo_root_password)" --authenticationDatabase=admin
+            {{ mongo_database }} --eval "db.orders.countDocuments({})"'
+          register: restore_after
+          changed_when: false
+
+        - name: Conferência dos dados recuperados
+          ansible.builtin.debug:
+            msg: "Restaurado {{ restore_name }}: pedidos antes={{ restore_before.stdout | trim }}, depois={{ restore_after.stdout | trim }}"
+      always:
+        - name: Remover arquivos temporários
+          ansible.builtin.file:
+            path: "{{ restore_dir }}"
+            state: absent
+
+        - name: Remover arquivo temporário do container
+          ansible.builtin.command: "docker exec {{ mongo_container_name }} rm -f /tmp/restore.archive.gz"
+          changed_when: false
+          failed_when: false

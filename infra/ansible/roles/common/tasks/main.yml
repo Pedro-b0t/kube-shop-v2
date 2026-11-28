@@ -1,7 +1,16 @@
+---
 - name: Atualizar cache APT
   ansible.builtin.apt:
     update_cache: true
     cache_valid_time: 3600
+
+- name: Instalar pacotes base
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
 
 - name: Atualizar sistema operacional
   ansible.builtin.apt:
@@ -10,7 +19,20 @@
 
 - name: Instalar pacotes extras
   ansible.builtin.apt:
-    name: "{{ extra_packages.split(',') }}"
+    name: "{{ extra_packages.split(',') | map('trim') | reject('equalto', '') | list }}"
     state: present
+  when: extra_packages | length > 0
+
+- name: Verificar se o sistema exige reinicio
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: common_reboot_required
+  when: update_os | bool
+
+- name: Reiniciar a VM quando a atualizacao exigir
+  ansible.builtin.reboot:
+    reboot_timeout: 600
   when:
-    - extra_packages | length > 0
+    - update_os | bool
+    - allow_reboot | bool
+    - common_reboot_required.stat.exists | default(false)

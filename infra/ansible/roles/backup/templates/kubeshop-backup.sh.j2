@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Gerenciado pelo Ansible (role backup). Backup logico do MongoDB para o Cloud Storage.
+set -euo pipefail
+
+container="{{ mongo_container_name }}"
+destination="gs://{{ backup_bucket }}/{{ kubeshop_environment }}"
+name="mongodb-$(date -u +%s).archive.gz"
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"; docker exec "$container" rm -f /tmp/backup.archive.gz >/dev/null 2>&1 || true' EXIT
+
+# A senha e lida dentro do container (arquivo de segredo), nunca aparece na lista de processos do host.
+docker exec "$container" sh -c 'mongodump --quiet --username="{{ mongo_root_username }}" --password="$(cat /run/secrets/mongo_root_password)" --authenticationDatabase=admin --db={{ mongo_database }} --gzip --archive=/tmp/backup.archive.gz'
+docker cp "$container:/tmp/backup.archive.gz" "$workdir/$name"
+gcloud storage cp "$workdir/$name" "$destination/$name" --quiet
+
+orders="$(docker exec "$container" sh -c 'mongosh --quiet --username="{{ mongo_root_username }}" --password="$(cat /run/secrets/mongo_root_password)" --authenticationDatabase=admin {{ mongo_database }} --eval "db.orders.countDocuments({})"')"
+echo "BACKUP_OK file=$name destination=$destination/$name orders=$orders"

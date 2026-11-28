@@ -9,9 +9,7 @@ repo_root: "{{ playbook_dir }}/../../.."
 kubeshop_etc: /etc/kubeshop
 
 # ----- Parametros do pipeline (podem ser sobrescritos com -e) -----
-# "current" mantem a versao ja implantada (ou a padrao, na primeira execucao).
-app_version: current
-kubeshop_app_version_default: "1.0.0"
+app_version: "1.0.0"
 mongo_image_tag: "8.0.17"
 update_os: false
 allow_reboot: true

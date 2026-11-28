@@ -1,0 +1,9 @@
+---
+- name: Executar backup agora
+  ansible.builtin.command: /usr/local/sbin/kubeshop-backup.sh
+  register: backup_run
+  changed_when: true
+
+- name: Resultado do backup
+  ansible.builtin.debug:
+    msg: "{{ backup_run.stdout_lines | select('match', '^BACKUP_OK') | list }}"

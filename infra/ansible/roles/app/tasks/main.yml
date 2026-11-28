@@ -1,35 +1,53 @@
 ---
-- name: Criar diretório da aplicação
+- name: Criar diretorio da aplicacao
   ansible.builtin.file:
     path: /opt/kubeshop
     state: directory
-    mode: "0755"
+    mode: "0700"
 
-- name: Criar arquivo da senha da aplicação
+- name: Criar arquivo da senha da aplicacao
   ansible.builtin.copy:
     content: "{{ mongo_app_password }}"
     dest: /opt/kubeshop/mongo-app-password
-    mode: "0600"
+    mode: "0444"
   no_log: true
 
-- name: Gerar compose da aplicação
+# A VM autentica no Artifact Registry com a Service Account anexada a ela (sem chaves).
+- name: Obter token da Service Account da VM
+  ansible.builtin.uri:
+    url: http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+    headers:
+      Metadata-Flavor: Google
+    return_content: true
+  register: app_gcp_token
+  changed_when: false
+  no_log: true
+
+- name: Autenticar o Docker no Artifact Registry
+  ansible.builtin.command:
+    argv:
+      - docker
+      - login
+      - --username=oauth2accesstoken
+      - --password-stdin
+      - "{{ registry_url.split('/')[0] }}"
+    stdin: "{{ app_gcp_token.json.access_token }}"
+  changed_when: false
+  no_log: true
+
+- name: Gerar compose da aplicacao
   ansible.builtin.template:
     src: compose.app.yaml.j2
     dest: /opt/kubeshop/compose.app.yaml
     mode: "0644"
 
-- name: Fazer pull das imagens quando solicitado
-  community.docker.docker_compose_v2:
-    project_src: /opt/kubeshop
-    files:
-      - compose.app.yaml
-    pull: always
-  when: force_pull_images | bool
-
-- name: Subir aplicação
+- name: Subir aplicacao
   community.docker.docker_compose_v2:
     project_src: /opt/kubeshop
     files:
       - compose.app.yaml
     state: present
-    pull: policy
+    pull: "{{ 'always' if force_pull_images | bool else 'missing' }}"
+    remove_orphans: true
+    wait: true
+    wait_timeout: 300

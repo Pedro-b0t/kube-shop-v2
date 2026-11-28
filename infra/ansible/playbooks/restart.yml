@@ -1,6 +1,6 @@
 ---
 - name: Reiniciar serviços
-  hosts: "{{ service_scope }}"
+  hosts: "{{ service_scope | default('all') }}"
   become: true
 
   tasks:

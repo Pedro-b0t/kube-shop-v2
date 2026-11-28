@@ -1,51 +1,56 @@
 ---
-- name: Criar diretório temporário
-  ansible.builtin.file:
-    path: /tmp/mongo-backup
-    state: directory
-    mode: "0755"
-
-- name: Gerar nome do backup
-  ansible.builtin.set_fact:
-    backup_file: "/tmp/mongo-backup/mongodb-{{ ansible_date_time.epoch }}.archive.gz"
-
-- name: Executar mongodump
-  ansible.builtin.command:
-    cmd: >
-      docker exec {{ mongo_container_name }}
-      mongodump
-      --username={{ mongo_root_username }}
-      --password={{ mongo_root_password }}
-      --authenticationDatabase=admin
-      --gzip
-      --archive=/tmp/backup.archive.gz
-  no_log: true
-
-- name: Copiar backup para o host
-  ansible.builtin.command:
-    cmd: >
-      docker cp
-      {{ mongo_container_name }}:/tmp/backup.archive.gz
-      {{ backup_file }}
-
-- name: Enviar backup para o bucket
-  ansible.builtin.command:
-    cmd: >
-      gsutil cp
-      {{ backup_file }}
-      gs://{{ backup_bucket }}/{{ kubeshop_environment }}/
-- name: Remover arquivo temporário do container
-  ansible.builtin.command:
-    argv:
-      - docker
-      - exec
-      - "{{ mongo_container_name }}"
-      - rm
-      - -f
-      - /tmp/backup.archive.gz
+- name: Verificar o Google Cloud CLI
+  ansible.builtin.command: which gcloud
+  register: backup_gcloud
   changed_when: false
+  failed_when: false
 
-- name: Remover arquivo temporário do host
-  ansible.builtin.file:
-    path: "{{ backup_file }}"
-    state: absent
+- name: Instalar o Google Cloud CLI quando ausente
+  when: backup_gcloud.rc != 0
+  block:
+    - name: Baixar chave do repositorio Google Cloud
+      ansible.builtin.get_url:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        dest: /usr/share/keyrings/cloud.google.asc
+        mode: "0644"
+
+    - name: Configurar repositorio Google Cloud
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/cloud.google.asc] https://packages.cloud.google.com/apt cloud-sdk main"
+        filename: google-cloud-sdk
+        state: present
+        update_cache: true
+
+    - name: Instalar google-cloud-cli
+      ansible.builtin.apt:
+        name: google-cloud-cli
+        state: present
+
+- name: Instalar o script de backup
+  ansible.builtin.template:
+    src: kubeshop-backup.sh.j2
+    dest: /usr/local/sbin/kubeshop-backup.sh
+    mode: "0750"
+
+- name: Instalar o servico de backup
+  ansible.builtin.template:
+    src: kubeshop-backup.service.j2
+    dest: /etc/systemd/system/kubeshop-backup.service
+    mode: "0644"
+  notify: Recarregar systemd
+
+- name: Instalar o timer de backup diario
+  ansible.builtin.template:
+    src: kubeshop-backup.timer.j2
+    dest: /etc/systemd/system/kubeshop-backup.timer
+    mode: "0644"
+  notify: Recarregar systemd
+
+- name: Aplicar unidades systemd agora
+  ansible.builtin.meta: flush_handlers
+
+- name: Habilitar e iniciar o timer de backup
+  ansible.builtin.systemd_service:
+    name: kubeshop-backup.timer
+    enabled: true
+    state: started

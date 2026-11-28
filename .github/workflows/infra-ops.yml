@@ -28,7 +28,7 @@ on:
         type: string
         default: "200"
       backup_file:
-        description: "restore: objeto do bucket (ex.: dev/kubeshop-20261126T030000Z.archive.gz) ou latest"
+        description: "restore: latest ou nome do backup (ex.: mongodb-1764200000.archive.gz)"
         type: string
         default: latest
       order_id:
@@ -111,7 +111,7 @@ jobs:
             logs)    ansible-playbook playbooks/logs.yml -e "service_scope=$SCOPE" -e "log_lines=$LOG_LINES" ;;
             restart) ansible-playbook playbooks/restart.yml -e "service_scope=$SCOPE" ;;
             backup)  ansible-playbook playbooks/backup.yml ;;
-            restore) ansible-playbook playbooks/restore.yml -e "backup_file=$BACKUP_FILE" ;;
+            restore) ansible-playbook playbooks/restore.yml -e "backup_file=$BACKUP_FILE" -e confirm_restore=true ;;
             verify)
               out="../terraform/env"
               STORE_URL="$(terraform -chdir=$out output -raw store_url)" \

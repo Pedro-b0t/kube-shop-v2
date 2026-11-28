@@ -1,18 +1,23 @@
 ---
 - name: Coletar logs dos containers
-  hosts: "{{ service_scope }}"
+  hosts: "{{ service_scope | default('all') }}"
   become: true
   gather_facts: false
-
   tasks:
-    - name: Listar containers em execução
-      ansible.builtin.command:
-        cmd: docker ps --format "{{'{{'}}.Names{{'}}'}}"
-      register: containers
+    - name: Listar containers (inclui parados)
+      ansible.builtin.command: docker ps -a --format "{% raw %}{{.Names}}{% endraw %}"
+      register: logs_containers
       changed_when: false
 
-    - name: Mostrar logs dos containers
-      ansible.builtin.command:
-        cmd: docker logs --tail {{ log_lines }} {{ item }}
-      loop: "{{ containers.stdout_lines }}"
+    - name: Ler logs dos containers
+      ansible.builtin.shell: "docker logs --tail {{ log_lines | default(200) }} {{ item }} 2>&1"
+      loop: "{{ logs_containers.stdout_lines }}"
+      register: logs_output
       changed_when: false
+
+    - name: Exibir logs
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ logs_output.results }}"
+      loop_control:
+        label: "{{ inventory_hostname }} / {{ item.item }}"

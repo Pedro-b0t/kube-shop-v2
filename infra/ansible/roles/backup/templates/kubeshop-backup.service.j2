@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup do MongoDB do KubeShop para o Cloud Storage
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kubeshop-backup.sh

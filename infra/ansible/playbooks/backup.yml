@@ -2,6 +2,12 @@
 - name: Executar backup do MongoDB
   hosts: db
   become: true
+  tasks:
+    - name: Garantir script e timer de backup
+      ansible.builtin.import_role:
+        name: backup
 
-  roles:
-    - backup
+    - name: Executar backup agora
+      ansible.builtin.import_role:
+        name: backup
+        tasks_from: run

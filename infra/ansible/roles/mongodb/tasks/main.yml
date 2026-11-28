@@ -1,60 +1,64 @@
 ---
-- name: Criar diretório de dados do MongoDB
+- name: Verificar se o disco de dados esta anexado
+  ansible.builtin.stat:
+    path: /dev/disk/by-id/google-mongo-data
+  register: mongodb_disk
+
+# Sem o disco dedicado os dados ficariam no disco de boot e se perderiam ao recriar a VM (REQ-05).
+- name: Exigir o disco de dados dedicado
+  ansible.builtin.assert:
+    that: mongodb_disk.stat.exists
+    fail_msg: Disco /dev/disk/by-id/google-mongo-data nao encontrado na VM do banco.
+
+- name: Criar diretorio de dados do MongoDB
   ansible.builtin.file:
     path: /var/lib/mongo
     state: directory
     mode: "0755"
 
-- name: Verificar se o disco existe
-  ansible.builtin.stat:
-    path: /dev/disk/by-id/google-mongo-data
-  register: mongo_disk
-
-- name: Formatar disco MongoDB
+- name: Formatar disco de dados (somente se ainda nao tiver sistema de arquivos)
   community.general.filesystem:
     dev: /dev/disk/by-id/google-mongo-data
     fstype: ext4
-  when: mongo_disk.stat.exists
 
-- name: Montar disco MongoDB
+- name: Montar disco de dados
   ansible.posix.mount:
     path: /var/lib/mongo
     src: /dev/disk/by-id/google-mongo-data
     fstype: ext4
+    opts: defaults,nofail
     state: mounted
-  when: mongo_disk.stat.exists
 
-- name: Criar diretório da aplicação
+# Diretorio restrito ao root; os arquivos de segredo precisam ser legiveis
+# pelos usuarios nao-root dentro dos containers (mesmo modelo do setup local).
+- name: Criar diretorio da aplicacao
   ansible.builtin.file:
     path: /opt/kubeshop
     state: directory
-    mode: "0755"
+    mode: "0700"
 
-- name: Criar secret root do MongoDB
+- name: Criar segredo root do MongoDB
   ansible.builtin.copy:
     content: "{{ mongo_root_password }}"
     dest: /opt/kubeshop/mongo-root-password
-    mode: "0600"
+    mode: "0444"
   no_log: true
 
-- name: Criar secret da aplicação
+- name: Criar segredo da aplicacao
   ansible.builtin.copy:
     content: "{{ mongo_app_password }}"
     dest: /opt/kubeshop/mongo-app-password
-    mode: "0600"
+    mode: "0444"
   no_log: true
 
-- name: Copiar script de inicialização do MongoDB
+- name: Copiar scripts de inicializacao e healthcheck do MongoDB
   ansible.builtin.copy:
-    src: "{{ repo_root }}/docker/mongodb/init.js"
-    dest: /opt/kubeshop/init.js
+    src: "{{ repo_root }}/docker/mongodb/{{ item.src }}"
+    dest: "/opt/kubeshop/{{ item.dest }}"
     mode: "0644"
-
-- name: Copiar script de healthcheck do MongoDB
-  ansible.builtin.copy:
-    src: "{{ repo_root }}/docker/mongodb/healthcheck.js"
-    dest: /opt/kubeshop/healthcheck.js
-    mode: "0644"
+  loop:
+    - { src: init.js, dest: init.js }
+    - { src: healthcheck.js, dest: healthcheck.js }
 
 - name: Gerar compose do MongoDB
   ansible.builtin.template:
@@ -68,3 +72,6 @@
     files:
       - compose.db.yaml
     state: present
+    pull: "{{ 'always' if force_pull_images | bool else 'missing' }}"
+    wait: true
+    wait_timeout: 240
