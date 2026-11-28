@@ -4,15 +4,17 @@ Cada critério de aceite deve ter aqui um registro verificável. Preencha a colu
 
 Não salve senhas, chaves ou o conteúdo de `.secrets/` — os logs dos pipelines já não os exibem; confira antes de anexar prints do console.
 
+Ambiente: projeto GCP `kubeshop-zibiska-pm04`, `southamerica-east1-a`, loja em `http://35.215.252.17`. Pedido de referência: `6b0a3f4a47a9d4439be63eae` (criado no Cenário 1).
+
 | Critério | Evidência esperada | Workflow | Execução | Arquivos |
 |---|---|---|---|---|
-| ACE-01 Reprodução | Ambiente criado do zero pelo pipeline | `infra-deploy` (`apply`, `build_images`) | | |
-| ACE-02 Duas VMs | Inventário (`terraform output`) e lista de VMs no console | `infra-deploy` | | |
-| ACE-03 Isolamento | Resumo do `verify` (27017 fechada, banco sem IP público, `/api/health/ready` = 200) | `infra-ops` (`verify`) | | |
-| ACE-04 Aplicação | Loja aberta, catálogo, pedido criado e consultado após recarregar | `infra-ops` (`verify`) + print do navegador | | |
-| ACE-05 Persistência | `order_id` preservado após `restart` e após alteração de tipo de VM | `infra-ops` (`restart`, `verify`), `infra-deploy` (Cenário 2) | | |
-| ACE-06 CI/CD | Imagens publicadas e deploy disparado pelo CI | `app-cicd`, `infra-app-deploy` | | |
-| ACE-07 Recuperação | Backup no bucket e restauração com conferência dos pedidos | `infra-ops` (`backup`, `restore`, `verify`) | | |
-| ACE-08 Administração | Registros dos pipelines, rotinas e desativação | `infra-ops`, `infra-destroy` | | |
-| ACE-09 Custos | Estimativa (documento de custos) e custo real do console | — | | |
-| PM04 Cenário 3 | Terraform sem alterações e Ansible `changed=0` | `infra-deploy` (`check_idempotence`) | | |
+| ACE-01 Reprodução | Ambiente criado do zero pelo pipeline | `infra-deploy` (`apply`, `build_images`) | [plan #3](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/45724065516), [apply #4](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46098453372) | [01](01-plan-inicial.png), [02](02-cenario1-criacao-apply.png) |
+| ACE-02 Duas VMs | Inventário (`terraform output`) e lista de VMs no console | `infra-deploy` | [apply #4](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46098453372) (resumo "Recursos do ambiente") | [17](17-console-vms.png) (`kubeshop-dev-app` com IP externo; `kubeshop-dev-db` só com IP interno) |
+| ACE-03 Isolamento | Resumo do `verify` (27017 fechada, banco sem IP público, `/api/health/ready` = 200) | `infra-ops` (`verify`) | [verify #2](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46102064137) | [05](05-verify-isolamento-persistencia.png) |
+| ACE-04 Aplicação | Loja aberta, catálogo, pedido criado e consultado após recarregar | `infra-ops` (`verify`) + print do navegador | [verify #2](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46102064137) | [05](05-verify-isolamento-persistencia.png), [15](15-loja-sacola.png), [16](16-loja-pedido-confirmado.png) |
+| ACE-05 Persistência | `order_id` preservado após `restart` e após alteração de tipo de VM | `infra-ops` (`restart`, `verify`), `infra-deploy` (Cenário 2) | [restart #1](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46100190684), [apply #5](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46100447106), [verify #2](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46102064137) | [03](03-restart-servicos.png), [04](04-cenario2-alteracao-vm-banco.png), [05](05-verify-isolamento-persistencia.png) |
+| ACE-06 CI/CD | Imagens publicadas e deploy disparado pelo CI | `app-cicd`, `infra-app-deploy` | [CI/CD #1](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46103964727), [deploy #1](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46104300776) | [11](11-cicd-aplicacao.png), [12](12-deploy-versao-aplicacao.png) |
+| ACE-07 Recuperação | Backup no bucket e restauração com conferência dos pedidos | `infra-ops` (`backup`, `restore`, `verify`) | [backup #8](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46172037119) (`mongodb-1795887895.archive.gz`), pedido criado após o backup, [restore #9](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46172218526): **pedidos antes=7, depois=6** (o banco voltou ao estado do backup). Primeira rodada: [backup #3](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46102447367), [restore #4](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46102675691), [verify #5](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46102920581) | [06](06-backup.png), [07](07-restore.png), [08](08-verify-pos-restore.png), [14](14-restore-recuperacao.png) |
+| ACE-08 Administração | Registros dos pipelines, rotinas e desativação | `infra-ops`, `infra-destroy` | [health #6](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46103273109), [logs #7](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46103780079); *desativação após a apresentação* | [00](00-lista-execucoes-pipelines.png), [09](09-health.png), [10](10-logs.png) |
+| ACE-09 Custos | Estimativa (documento de custos) e custo real do console | — | Billing → Relatórios, 1–28/11/2026: **R$ 5,85** (Compute Engine R$ 4,59; Cloud NAT R$ 0,49; Persistent Disk R$ 0,36; demais R$ 0,41) | [18](18-custos-resumo.png), [19](19-custos-por-produto.png) |
+| PM04 Cenário 3 | Terraform sem alterações e Ansible `changed=0` | `infra-deploy` (`check_idempotence`) | [apply #6](https://github.com/Pedro-b0t/kube-shop-v2/actions/runs/46169867064): plan `shared` e `env` "No changes"; segunda execução do Ansible `app changed=0`, `db changed=0` | [13](13-cenario3-terraform-sem-alteracoes.png) |
