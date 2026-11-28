@@ -1,0 +1,35 @@
+---
+- name: Criar diretório da aplicação
+  ansible.builtin.file:
+    path: /opt/kubeshop
+    state: directory
+    mode: "0755"
+
+- name: Criar arquivo da senha da aplicação
+  ansible.builtin.copy:
+    content: "{{ mongo_app_password }}"
+    dest: /opt/kubeshop/mongo-app-password
+    mode: "0600"
+  no_log: true
+
+- name: Gerar compose da aplicação
+  ansible.builtin.template:
+    src: compose.app.yaml.j2
+    dest: /opt/kubeshop/compose.app.yaml
+    mode: "0644"
+
+- name: Fazer pull das imagens quando solicitado
+  community.docker.docker_compose_v2:
+    project_src: /opt/kubeshop
+    files:
+      - compose.app.yaml
+    pull: always
+  when: force_pull_images | bool
+
+- name: Subir aplicação
+  community.docker.docker_compose_v2:
+    project_src: /opt/kubeshop
+    files:
+      - compose.app.yaml
+    state: present
+    pull: policy

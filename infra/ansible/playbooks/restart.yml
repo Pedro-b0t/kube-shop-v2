@@ -1,0 +1,22 @@
+---
+- name: Reiniciar serviços
+  hosts: "{{ service_scope }}"
+  become: true
+
+  tasks:
+
+    - name: Reiniciar containers da aplicação
+      community.docker.docker_compose_v2:
+        project_src: /opt/kubeshop
+        files:
+          - compose.app.yaml
+        state: restarted
+      when: "'app' in group_names"
+
+    - name: Reiniciar MongoDB
+      community.docker.docker_compose_v2:
+        project_src: /opt/kubeshop
+        files:
+          - compose.db.yaml
+        state: restarted
+      when: "'db' in group_names"

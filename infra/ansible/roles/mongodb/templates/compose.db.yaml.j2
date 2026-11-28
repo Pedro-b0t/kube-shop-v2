@@ -1,0 +1,61 @@
+services:
+
+  mongodb:
+
+    image: mongo:{{ mongo_image_tag }}
+
+    container_name: {{ mongo_container_name }}
+
+    restart: unless-stopped
+
+    command:
+      - --bind_ip_all
+      - --wiredTigerCacheSizeGB
+      - "0.25"
+
+    environment:
+
+      MONGO_INITDB_ROOT_USERNAME: {{ mongo_root_username }}
+
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+
+      MONGO_INITDB_DATABASE: {{ mongo_database }}
+
+      MONGO_APP_USERNAME: {{ mongo_app_username }}
+
+      MONGO_APP_PASSWORD_FILE: /run/secrets/mongo_app_password
+
+    secrets:
+      - mongo_root_password
+      - mongo_app_password
+
+    volumes:
+
+      - /var/lib/mongo:/data/db
+
+      - /opt/kubeshop/init.js:/docker-entrypoint-initdb.d/10-app-user.js:ro
+
+      - /opt/kubeshop/healthcheck.js:/opt/healthcheck.js:ro
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--file",
+          "/opt/healthcheck.js"
+        ]
+
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+secrets:
+
+  mongo_root_password:
+    file: ./mongo-root-password
+
+  mongo_app_password:
+    file: ./mongo-app-password

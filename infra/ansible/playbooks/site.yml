@@ -1,9 +1,22 @@
 ---
-# PROVISORIO: permite validar e planejar a infraestrutura (Terraform) antes de as roles do Ansible existirem.
-# Substituir pelo site.yml completo (common, docker, mongodb, app, backup) conforme docs/DIVISAO-TAREFAS.md.
-- name: Conectividade com as VMs (placeholder)
+- name: Configuração base de todos os hosts
   hosts: all
-  gather_facts: false
-  tasks:
-    - name: Testar acesso SSH via IAP
-      ansible.builtin.ping:
+  become: true
+
+  roles:
+    - common
+    - docker
+
+- name: Configuração do banco MongoDB
+  hosts: db
+  become: true
+
+  roles:
+    - mongodb
+
+- name: Configuração da aplicação
+  hosts: app
+  become: true
+
+  roles:
+    - app

@@ -1,0 +1,7 @@
+---
+- name: Executar backup do MongoDB
+  hosts: db
+  become: true
+
+  roles:
+    - backup

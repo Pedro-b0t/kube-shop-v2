@@ -1,0 +1,53 @@
+---
+- name: Restaurar backup do MongoDB
+  hosts: db
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Validar confirmação e nome do backup
+      ansible.builtin.assert:
+        that:
+          - confirm_restore | default(false) | bool
+          - backup_name is defined
+          - backup_name is match('^mongodb-[0-9]+[.]archive[.]gz$')
+        fail_msg: >-
+          Informe confirm_restore=true e backup_name com o nome
+          completo de um backup válido.
+
+    - name: Criar diretório temporário de restauração
+      ansible.builtin.file:
+        path: /tmp/mongo-restore
+        state: directory
+        mode: "0700"
+
+    - name: Baixar backup do Google Cloud Storage
+      ansible.builtin.command:
+        argv:
+          - gsutil
+          - cp
+          - "gs://{{ backup_bucket }}/{{ kubeshop_environment }}/{{ backup_name }}"
+          - "/tmp/mongo-restore/{{ backup_name }}"
+
+    - name: Copiar backup para o container MongoDB
+      ansible.builtin.command:
+        argv:
+          - docker
+          - cp
+          - "/tmp/mongo-restore/{{ backup_name }}"
+          - "{{ mongo_container_name }}:/tmp/restore.archive.gz"
+
+    - name: Restaurar banco de dados
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ mongo_container_name }}"
+          - mongorestore
+          - "--username={{ mongo_root_username }}"
+          - "--password={{ mongo_root_password }}"
+          - "--authenticationDatabase=admin"
+          - --gzip
+          - --archive=/tmp/restore.archive.gz
+          - --drop
+      no_log: true

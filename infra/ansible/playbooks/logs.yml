@@ -1,0 +1,18 @@
+---
+- name: Coletar logs dos containers
+  hosts: "{{ service_scope }}"
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Listar containers em execução
+      ansible.builtin.command:
+        cmd: docker ps --format "{{'{{'}}.Names{{'}}'}}"
+      register: containers
+      changed_when: false
+
+    - name: Mostrar logs dos containers
+      ansible.builtin.command:
+        cmd: docker logs --tail {{ log_lines }} {{ item }}
+      loop: "{{ containers.stdout_lines }}"
+      changed_when: false

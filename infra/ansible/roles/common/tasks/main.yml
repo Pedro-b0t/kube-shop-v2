@@ -1,0 +1,16 @@
+- name: Atualizar cache APT
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Atualizar sistema operacional
+  ansible.builtin.apt:
+    upgrade: dist
+  when: update_os | bool
+
+- name: Instalar pacotes extras
+  ansible.builtin.apt:
+    name: "{{ extra_packages.split(',') }}"
+    state: present
+  when:
+    - extra_packages | length > 0

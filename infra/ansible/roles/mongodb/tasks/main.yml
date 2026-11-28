@@ -1,0 +1,70 @@
+---
+- name: Criar diretório de dados do MongoDB
+  ansible.builtin.file:
+    path: /var/lib/mongo
+    state: directory
+    mode: "0755"
+
+- name: Verificar se o disco existe
+  ansible.builtin.stat:
+    path: /dev/disk/by-id/google-mongo-data
+  register: mongo_disk
+
+- name: Formatar disco MongoDB
+  community.general.filesystem:
+    dev: /dev/disk/by-id/google-mongo-data
+    fstype: ext4
+  when: mongo_disk.stat.exists
+
+- name: Montar disco MongoDB
+  ansible.posix.mount:
+    path: /var/lib/mongo
+    src: /dev/disk/by-id/google-mongo-data
+    fstype: ext4
+    state: mounted
+  when: mongo_disk.stat.exists
+
+- name: Criar diretório da aplicação
+  ansible.builtin.file:
+    path: /opt/kubeshop
+    state: directory
+    mode: "0755"
+
+- name: Criar secret root do MongoDB
+  ansible.builtin.copy:
+    content: "{{ mongo_root_password }}"
+    dest: /opt/kubeshop/mongo-root-password
+    mode: "0600"
+  no_log: true
+
+- name: Criar secret da aplicação
+  ansible.builtin.copy:
+    content: "{{ mongo_app_password }}"
+    dest: /opt/kubeshop/mongo-app-password
+    mode: "0600"
+  no_log: true
+
+- name: Copiar script de inicialização do MongoDB
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/docker/mongodb/init.js"
+    dest: /opt/kubeshop/init.js
+    mode: "0644"
+
+- name: Copiar script de healthcheck do MongoDB
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/docker/mongodb/healthcheck.js"
+    dest: /opt/kubeshop/healthcheck.js
+    mode: "0644"
+
+- name: Gerar compose do MongoDB
+  ansible.builtin.template:
+    src: compose.db.yaml.j2
+    dest: /opt/kubeshop/compose.db.yaml
+    mode: "0644"
+
+- name: Subir MongoDB
+  community.docker.docker_compose_v2:
+    project_src: /opt/kubeshop
+    files:
+      - compose.db.yaml
+    state: present

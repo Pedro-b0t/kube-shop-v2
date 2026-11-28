@@ -1,0 +1,92 @@
+Integração CI/CD
+Objetivo
+Automatizar a entrega da aplicação kube-shop-v2, garantindo consistência entre os ambientes e reduzindo atividades manuais de implantação.
+
+Fluxo de Entrega
+O processo de CI/CD segue as seguintes etapas:
+
+Desenvolvedor realiza alterações no código.
+Commit é enviado para o repositório Git.
+Pipeline inicia processo de validação.
+Imagens Docker são construídas.
+Imagens são publicadas no Artifact Registry.
+Terraform provisiona ou atualiza a infraestrutura.
+Terraform gera o inventário utilizado pelo Ansible.
+Ansible realiza a configuração dos servidores.
+Containers são implantados ou atualizados.
+Health checks validam o ambiente.
+Ferramentas Utilizadas
+Controle de Versão
+Git
+Infraestrutura como Código
+Terraform
+Gerenciamento de Configuração
+Ansible
+Containers
+Docker
+Docker Compose
+Registro de Imagens
+Google Artifact Registry
+Armazenamento de Backups
+Google Cloud Storage
+Provisionamento da Infraestrutura
+A infraestrutura é gerenciada através do Terraform.
+
+Principais recursos:
+
+Rede VPC
+Regras de Firewall
+VM APP
+VM DB
+Disco Persistente
+IAM
+Outputs de integração
+Geração do Inventory
+Após o provisionamento, o Terraform gera automaticamente o inventário utilizado pelo Ansible.
+
+Exemplo:
+
+terraform output -raw ansible_inventory
+Resultado:
+
+infra/ansible/inventory/hosts.ini
+Deploy Automatizado
+O deploy da aplicação é realizado através do Ansible.
+
+Comando principal:
+
+ansible-playbook playbooks/site.yml
+Etapas executadas:
+
+Configuração básica do sistema
+Instalação do Docker
+Configuração do MongoDB
+Implantação da API
+Implantação do Frontend
+Versionamento da Aplicação
+As versões da aplicação são controladas através da variável:
+
+app_version
+presente em:
+
+inventory/group_vars/all.yml
+A atualização de versão é realizada alterando este valor e executando novamente o deploy.
+
+Validação Pós-Deploy
+Após cada implantação são executadas verificações de saúde utilizando:
+
+ansible-playbook playbooks/health.yml
+O objetivo é garantir:
+
+Containers ativos
+Serviços disponíveis
+Banco de dados acessível
+Benefícios da Solução
+Automação do processo de entrega
+Padronização de ambientes
+Redução de erros manuais
+Reprodutibilidade da infraestrutura
+Facilidade de manutenção
+Escalabilidade futura
+Conclusão
+A integração entre Terraform, Docker e Ansible permite que toda a infraestrutura e aplicação sejam implantadas de forma automatizada, garantindo maior confiabilidade e consistência durante o ciclo de vida da solução.

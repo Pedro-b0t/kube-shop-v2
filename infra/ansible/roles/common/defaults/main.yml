@@ -1,0 +1,5 @@
+update_os: false
+
+extra_packages: ""
+
+allow_reboot: false
